@@ -142,10 +142,10 @@ Type *X86MachineInstructionRaiser::getPhysRegOperandType(const MachineInstr &MI,
   if (isGPReg(PReg))
     return Type::getIntNTy(Ctx, getPhysRegSizeInBits(Op.getReg()));
   else if (isSSE2Reg(PReg)) {
-    auto Sz = getInstructionMemOpSize(MI.getOpcode());
-    if (Sz == 4)
+    auto Sz = getPhysRegSizeInBits(Op.getReg());
+    if (Sz == 32)
       return Type::getFloatTy(Ctx);
-    else if (Sz == 8)
+    else if (Sz == 64)
       return Type::getDoubleTy(Ctx);
     llvm_unreachable("Unexpected memory operation size of instruction that "
                      "uses SSE register");

@@ -1591,7 +1591,7 @@ static constexpr const_addl_instr_info::value_type mapdata[] = {
     {X86::MOVAPDrr_REV, {0, Unknown}},
     {X86::MOVAPSmr, {0, Unknown}},
     {X86::MOVAPSrm, {0, Unknown}},
-    {X86::MOVAPSrr, {0, Unknown}},
+    {X86::MOVAPSrr, {0, SSE_MOV_RR}},
     {X86::MOVAPSrr_REV, {0, Unknown}},
     {X86::MOVBE16mr, {2, Unknown}},
     {X86::MOVBE16rm, {2, Unknown}},

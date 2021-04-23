@@ -48,6 +48,7 @@ enum InstructionKind : uint8_t {
   SSE_KIND_BEGIN,
   SSE_MOV_TO_MEM,
   SSE_MOV_FROM_MEM,
+  SSE_MOV_RR,
   SSE_COMPARE,
   SSE_CONVERT_SS2SD,
   SSE_KIND_END,

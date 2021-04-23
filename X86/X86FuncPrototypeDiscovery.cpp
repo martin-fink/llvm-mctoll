@@ -417,7 +417,9 @@ FunctionType *X86MachineInstructionRaiser::getRaisedFunctionPrototype() {
           if (!(llvm::X86::GR8RegClass.contains(Reg) ||
                 llvm::X86::GR16RegClass.contains(Reg) ||
                 llvm::X86::GR32RegClass.contains(Reg) ||
-                llvm::X86::GR64RegClass.contains(Reg)))
+                llvm::X86::GR64RegClass.contains(Reg) ||
+                llvm::X86::FR32RegClass.contains(Reg) ||
+                llvm::X86::FR64RegClass.contains(Reg)))
             continue;
 
           if (MO.isUse()) {
@@ -436,7 +438,9 @@ FunctionType *X86MachineInstructionRaiser::getRaisedFunctionPrototype() {
           if (!(llvm::X86::GR8RegClass.contains(Reg) ||
                 llvm::X86::GR16RegClass.contains(Reg) ||
                 llvm::X86::GR32RegClass.contains(Reg) ||
-                llvm::X86::GR64RegClass.contains(Reg)))
+                llvm::X86::GR64RegClass.contains(Reg) ||
+                llvm::X86::FR32RegClass.contains(Reg) ||
+                llvm::X86::FR64RegClass.contains(Reg)))
             continue;
 
           if (MO.isDef())
