@@ -189,6 +189,10 @@ private:
 
   bool handleUnpromotedReachingDefs();
 
+  const MachineInstr *getInstUsingPhysRegInBlock(int PhysReg,
+                                           const MachineInstr *StartMI,
+                                           const MachineBasicBlock *MBB,
+                                           unsigned StopAtInstProp);
   bool hasPhysRegDefInBlock(int PhysReg, const MachineInstr *StartMI,
                             const MachineBasicBlock *MBB,
                             unsigned StopAtInstProp, bool &HasStopInst);

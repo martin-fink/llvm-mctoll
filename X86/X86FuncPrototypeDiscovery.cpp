@@ -87,6 +87,13 @@ int X86MachineInstructionRaiser::getArgumentNumber(unsigned PReg) {
     if ((diff >= 0) && (diff < (int)GPR64ArgRegs64Bit.size())) {
       pos = diff + 1;
     }
+  } else if (isSSE2Reg(PReg)) {
+    int diff = std::distance(
+        SSEArgRegs64Bit.begin(),
+        std::find(SSEArgRegs64Bit.begin(), SSEArgRegs64Bit.end(), PReg));
+    if ((diff >= 0) && (diff < (int)SSEArgRegs64Bit.size())) {
+      pos = diff + 1;
+    }
   }
   return pos;
 }
@@ -681,31 +688,44 @@ bool X86MachineInstructionRaiser::buildFuncArgTypeVector(
     const std::set<MCPhysReg> &PhysRegs, std::vector<Type *> &ArgTyVec) {
   // A map of argument number and type as discovered
   std::map<unsigned int, Type *> argNumTypeMap;
+  std::map<unsigned int, Type *> sseArgNumTypeMap;
   llvm::LLVMContext &funcLLVMContext = MF.getFunction().getContext();
-  int MaxArgNum = 0;
+  int MaxGPArgNum = 0;
+  int MaxSSEArgNum = 0;
 
   for (MCPhysReg PReg : PhysRegs) {
     // If Reg is an argument register per C standard calling convention
     // construct function argument.
     int argNum = getArgumentNumber(PReg);
     if (argNum > 0) {
-      if (argNum > MaxArgNum)
-        MaxArgNum = argNum;
 
-      // Make sure each argument position is discovered only once
-      assert(argNumTypeMap.find(argNum) == argNumTypeMap.end());
-      if (is8BitPhysReg(PReg)) {
-        argNumTypeMap.insert(
-            std::make_pair(argNum, Type::getInt8Ty(funcLLVMContext)));
-      } else if (is16BitPhysReg(PReg)) {
-        argNumTypeMap.insert(
-            std::make_pair(argNum, Type::getInt16Ty(funcLLVMContext)));
-      } else if (is32BitPhysReg(PReg)) {
-        argNumTypeMap.insert(
-            std::make_pair(argNum, Type::getInt32Ty(funcLLVMContext)));
-      } else if (is64BitPhysReg(PReg)) {
-        argNumTypeMap.insert(
-            std::make_pair(argNum, Type::getInt64Ty(funcLLVMContext)));
+      if (isGPReg(PReg)) {
+        if (argNum > MaxGPArgNum)
+          MaxGPArgNum = argNum;
+
+        // Make sure each argument position is discovered only once
+        assert(argNumTypeMap.find(argNum) == argNumTypeMap.end());
+        if (is8BitPhysReg(PReg)) {
+          argNumTypeMap.insert(
+              std::make_pair(argNum, Type::getInt8Ty(funcLLVMContext)));
+        } else if (is16BitPhysReg(PReg)) {
+          argNumTypeMap.insert(
+              std::make_pair(argNum, Type::getInt16Ty(funcLLVMContext)));
+        } else if (is32BitPhysReg(PReg)) {
+          argNumTypeMap.insert(
+              std::make_pair(argNum, Type::getInt32Ty(funcLLVMContext)));
+        } else if (is64BitPhysReg(PReg)) {
+          argNumTypeMap.insert(
+              std::make_pair(argNum, Type::getInt64Ty(funcLLVMContext)));
+        }
+      } else if (isSSE2Reg(PReg)) {
+        if (argNum > MaxSSEArgNum)
+          MaxSSEArgNum = argNum;
+
+        // Make sure each argument position is discovered only once
+        assert(sseArgNumTypeMap.find(argNum) == sseArgNumTypeMap.end());
+        sseArgNumTypeMap.insert(
+            std::make_pair(argNum, Type::getDoubleTy(funcLLVMContext)));
       } else {
         outs() << x86RegisterInfo->getRegAsmName(PReg) << "\n";
         llvm_unreachable("Unhandled register type encountered in binary");
@@ -715,7 +735,7 @@ bool X86MachineInstructionRaiser::buildFuncArgTypeVector(
 
   // Build argument type vector that will be used to build FunctionType
   // while sanity checking arguments discovered
-  for (int i = 1; i <= MaxArgNum; i++) {
+  for (int i = 1; i <= MaxGPArgNum; i++) {
     auto argIter = argNumTypeMap.find(i);
     if (argIter == argNumTypeMap.end()) {
       // Argument register not used. It is most likely optimized.
@@ -724,6 +744,17 @@ bool X86MachineInstructionRaiser::buildFuncArgTypeVector(
       ArgTyVec.push_back(Type::getInt64Ty(funcLLVMContext));
     } else
       ArgTyVec.push_back(argNumTypeMap.find(i)->second);
+  }
+  // TODO: for now we just assume that SSE registers are always the last arguments
+  // This may work when compiling to X86 using the System V ABI, not necessarily
+  // for other ABIs.
+  for (int i = 1; i <= MaxSSEArgNum; i++) {
+    auto argIter = sseArgNumTypeMap.find(i);
+    if (argIter == sseArgNumTypeMap.end()) {
+      ArgTyVec.push_back(Type::getDoubleTy(funcLLVMContext));
+    } else {
+      ArgTyVec.push_back(argIter->second);
+    }
   }
   return true;
 }

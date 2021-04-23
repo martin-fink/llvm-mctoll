@@ -30,21 +30,31 @@ X86RaisedValueTracker::X86RaisedValueTracker(
 
   // Initialize entries for function register arguments in physToValueMap
   // Only first 6 arguments are passed as registers
-  unsigned RegArgCount = X86RegisterUtils::GPR64ArgRegs64Bit.size();
+  unsigned GPRegArgCount = X86RegisterUtils::GPR64ArgRegs64Bit.size();
+  unsigned SSERegArgCount = X86RegisterUtils::SSEArgRegs64Bit.size();
   MachineFunction &MF = x86MIRaiser->getMF();
   Function *CurFunction = x86MIRaiser->getRaisedFunction();
 
+  unsigned GPArgNum = 0;
+  unsigned SSEArgNum = 0;
   for (auto &Arg : CurFunction->args()) {
-    unsigned ArgNum = Arg.getArgNo();
-    if (ArgNum > RegArgCount)
+    if (GPArgNum > GPRegArgCount || SSEArgNum > SSERegArgCount)
       break;
     Type *ArgTy = Arg.getType();
-    // TODO : Handle non-integer argument types
-    assert(ArgTy->isIntegerTy() &&
-           "Unhandled argument type in raised function type");
+
+    MCPhysReg ArgReg;
+    if (ArgTy->isIntOrPtrTy()) {
+      ArgReg = X86RegisterUtils::GPR64ArgRegs64Bit[GPArgNum];
+      GPArgNum++;
+    } else if (ArgTy->isFloatingPointTy()) {
+      ArgReg = X86RegisterUtils::SSEArgRegs64Bit[SSEArgNum];
+      SSEArgNum++;
+    } else {
+      llvm_unreachable("Unhandled argument type in raised function type");
+    }
+
     unsigned ArgTySzInBits = ArgTy->getPrimitiveSizeInBits();
-    physRegDefsInMBB[X86RegisterUtils::GPR64ArgRegs64Bit[ArgNum]][0] =
-        std::make_pair(ArgTySzInBits, nullptr);
+    physRegDefsInMBB[ArgReg][0] = std::make_pair(ArgTySzInBits, nullptr);
   }
   // Walk all blocks to initialize physRegDefsInMBB based on register defs.
   for (MachineBasicBlock &MBB : MF) {

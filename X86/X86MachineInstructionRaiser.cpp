@@ -1905,11 +1905,11 @@ bool X86MachineInstructionRaiser::raiseMoveToMemInstr(const MachineInstr &MI,
   Type *StoreTy = SrcValue->getType();
   if (SrcValue->getType()->isIntegerTy())
     StoreTy = Type::getIntNTy(Ctx, memSzInBits);
-  else if (SrcValue->getType()->isFloatTy()) {
+  else if (SrcValue->getType()->isFloatingPointTy()) {
     if (memSzInBits == 32)
       StoreTy = Type::getFloatTy(Ctx);
     else if (memSzInBits == 64)
-      StoreTy = Type::getDoublePtrTy(Ctx);
+      StoreTy = Type::getDoubleTy(Ctx);
   }
 
   // Cast SrcValue and MemRefVal as needed.
@@ -4010,8 +4010,19 @@ bool X86MachineInstructionRaiser::raiseCallMachineInstr(
 
     assert(CalledFunc != nullptr && "Failed to detect call target");
     std::vector<Value *> CallInstFuncArgs;
-    unsigned NumArgs = CalledFunc->arg_size();
+    unsigned NumGPArgs = CalledFunc->arg_size();
     Argument *CalledFuncArgs = CalledFunc->arg_begin();
+
+    // check number of floating point args
+    unsigned NumSSEArgs = 0;
+    for (unsigned i = 0; i < NumGPArgs; ++i) {
+      if (CalledFunc->getArg(i)->getType()->isFloatingPointTy()) {
+        ++NumSSEArgs;
+      }
+    }
+    // NumGPArgs refers to just general purpose registers
+    NumGPArgs -= NumSSEArgs;
+    assert(NumGPArgs >= 0 && "Found more SSE args than function declares");
 
     if (CalledFunc->isVarArg()) {
       // Discover argument registers that are live just before the CallMI.
@@ -4101,28 +4112,53 @@ bool X86MachineInstructionRaiser::raiseCallMachineInstr(
       assert(!(PositionMask & 1) && !(PositionMask & (1 << 7)) &&
              "Invalid number of arguments discovered");
       uint8_t ShftPositionMask = PositionMask >> 1;
-      uint8_t NumArgsDiscovered = 0;
+      uint8_t NumGPArgsDiscovered = 0;
       // Consider only consecutive argument registers.
       while (ShftPositionMask & 1) {
         ShftPositionMask = ShftPositionMask >> 1;
-        NumArgsDiscovered++;
+        NumGPArgsDiscovered++;
       }
       // If number of arguments discovered is greater than CalledFunc
       // arguments use that as the number of arguments of the called
       // function.
-      if (NumArgsDiscovered > NumArgs) {
-        NumArgs = NumArgsDiscovered;
+      if (NumGPArgsDiscovered > NumGPArgs) {
+        NumGPArgs = NumGPArgsDiscovered;
+      }
+
+      uint8_t NumSSEArgsDiscovered = 0;
+      // Get the number of vector registers used
+      // When using the x86_64 System V ABI, RAX holds the number of vector
+      // registers used
+      auto Instr = getInstUsingPhysRegInBlock(X86::AL, &MI, CurMBB, MCID::Call);
+      if (Instr != nullptr && Instr->getNumOperands() > 0) {
+        // With the System V X86_64 ABI the compiler generates a instruction like
+        // mov al, 1
+        // with the number of vector arguments for the varargs call
+        const MachineOperand &SrcOp = Instr->getOperand(1);
+        if (SrcOp.isImm()) {
+          NumSSEArgsDiscovered = (uint8_t) SrcOp.getImm();
+        }
+      }
+      // If number of vector args discovered is greater than CalledFunc
+      // arguments, but still in the range of allowed number of vector
+      // argument registers, use that as the number of vector args
+      if (NumSSEArgsDiscovered > NumSSEArgs &&
+          NumGPArgsDiscovered <= SSEArgRegs64Bit.size()) {
+        NumSSEArgs = NumSSEArgsDiscovered;
       }
     }
     // Construct the argument list with values to be used to construct a new
     // CallInst. These values are those of the physical registers as defined
     // in C calling convention (the calling convention currently supported).
-    for (unsigned i = 0; i < NumArgs; i++) {
+    for (unsigned i = 0; i < NumGPArgs + NumSSEArgs; i++) {
+      // First check all GP registers, then FP registers
+      MCPhysReg ArgReg = i < NumGPArgs
+                             ? GPR64ArgRegs64Bit[i]
+                             : SSEArgRegs64Bit[i - NumGPArgs];
       // Get the values of argument registers
       // Do not match types since we are explicitly using 64-bit GPR array.
       // Any necessary casting will be done later in this function.
-      Value *ArgVal =
-          getRegOrArgValue(GPR64ArgRegs64Bit[i], MI.getParent()->getNumber());
+      Value *ArgVal = getRegOrArgValue(ArgReg, MI.getParent()->getNumber());
       // This condition will not be true for varargs of a variadic function.
       // In that case just add the value.
       if (i < CalledFunc->arg_size()) {
@@ -4133,7 +4169,15 @@ bool X86MachineInstructionRaiser::raiseCallMachineInstr(
         if (ArgVal == nullptr) {
           // Most likely the argument register corresponds to an argument value
           // that is not used in the function body. Just initialize it to 0.
-          ArgVal = ConstantInt::get(FuncArg.getType(), 0, false /* isSigned */);
+          if (FuncArg.getType()->isIntOrPtrTy()) {
+            ArgVal =
+                ConstantInt::get(FuncArg.getType(), 0, false /* isSigned */);
+          } else if (FuncArg.getType()->isFloatingPointTy()) {
+            ArgVal = ConstantFP::get(FuncArg.getType(), 0.0);
+          } else {
+            FuncArg.getType()->dump();
+            llvm_unreachable("Unsupported argument type");
+          }
         } else if (isa<ConstantInt>(ArgVal)) {
           ConstantInt *Address = dyn_cast<ConstantInt>(ArgVal);
           if (!Address->isNegative()) {
