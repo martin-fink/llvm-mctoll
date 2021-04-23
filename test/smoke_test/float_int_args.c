@@ -3,47 +3,34 @@
 // RUN: llvm-mctoll -d -I /usr/include/stdio.h %t
 // RUN: clang -o %t1 %t-dis.ll
 // RUN: %t1 2>&1 | FileCheck %s
-// CHECK: Returned first arg
-// CHECK: Returned second arg
-// CHECK: Returned third arg
+// CHECK: 0.5
+// CHECK: 3
+// CHECK: 1.5
 // CHECK-EMPTY
-
 
 #include <stdio.h>
 
-double return_third(double a, int i, double b) {
-  return b;
-}
-
-int return_second(double a, int i, double b) {
-  return i;
-}
-
-double return_first(double a, int i, double b) {
+double get_first(double a, int i, double b) {
   return a;
 }
 
+int get_second(double a, int i, double b) {
+  return i;
+}
+
+double get_third(double a, int i, double b) {
+  return b;
+}
+
 int main() {
-  double a = return_first(0.5, 1, 1.5);
-  if (a == 0.5) {
-    printf("Returned first arg\n");
-  } else {
-    printf("Did not return first arg\n");
-  }
+  double a = get_first(0.5, 3, 1.5);
+  printf("%.1f\n", a);
 
-  int b = return_second(0.5, 1, 1.5);
-  if (b == 1) {
-    printf("Returned second arg\n");
-  } else {
-    printf("Did not return second arg\n");
-  }
+  int b = get_second(0.5, 3, 1.5);
+  printf("%d\n", b);
 
-  double c = return_third(0.5, 1, 1.5);
-  if (c == 1.5) {
-    printf("Returned third arg\n");
-  } else {
-    printf("Did not return third arg\n");
-  }
+  double c = get_third(0.5, 3, 1.5);
+  printf("%.1f\n", c);
 
   return 0;
 }
