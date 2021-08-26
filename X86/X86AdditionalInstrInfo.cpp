@@ -1117,8 +1117,8 @@ static constexpr const_addl_instr_info::value_type mapdata[] = {
     {X86::LEA32r, {4, LEA_OP}},    // Memory address size 4 bytes
     {X86::LEA64_32r, {8, LEA_OP}}, // Memory address size 8 bytes
     {X86::LEA64r, {8, LEA_OP}},    // Memory address size 8 bytes
-    {X86::LEAVE, {0, LEAVE_OP}},
-    {X86::LEAVE64, {0, LEAVE_OP}},
+    {X86::LEAVE, {4, LEAVE_OP}},
+    {X86::LEAVE64, {8, LEAVE_OP}},
     {X86::LES16rm, {2, Unknown}},
     {X86::LES32rm, {4, Unknown}},
     {X86::LFENCE, {0, Unknown}},

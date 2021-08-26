@@ -95,6 +95,9 @@ private:
   // maintain a shadow stack indexed and sorted by descending order of stack
   // offset of objects allocated on the stack.
   std::map<int64_t, int> ShadowStackIndexedByOffset;
+  int64_t SPOffset = 0;
+  int64_t BPOffset = 0;
+  AllocaInst *Stack;
 
   // Commonly used LLVM data structures during this phase
   MachineRegisterInfo &machineRegInfo;
@@ -163,8 +166,6 @@ private:
                                 MachineBasicBlock::iterator);
   bool deleteNOOPInstrMF();
   bool unlinkEmptyMBBs();
-  // Adjust sizes of stack allocated objects
-  bool createFunctionStackFrame();
 
   // Method to record information that is used in a second pass
   // to raise control transfer instructions in a second pass.
@@ -197,7 +198,9 @@ private:
   Type *getReachingReturnType(const MachineBasicBlock &MBB);
   Type *getReturnTypeFromMBB(const MachineBasicBlock &MBB, bool &HasCall);
   Function *getTargetFunctionAtPLTOffset(const MachineInstr &, uint64_t);
-  Value *getStackAllocatedValue(const MachineInstr &, X86AddressMode &, bool);
+  Value *getStackAllocatedValue(const MachineInstr &, X86AddressMode &, int64_t AccessSize = 0);
+  Value *expandStack(const MachineInstr &MI, int64_t Size);
+  Value *reduceStack(const MachineInstr &MI, int64_t size);
   Value *getRegOperandValue(const MachineInstr &mi, unsigned OperandIndex);
 
   bool handleUnpromotedReachingDefs();
