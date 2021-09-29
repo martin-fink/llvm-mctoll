@@ -1858,8 +1858,6 @@ X86MachineInstructionRaiser::getGlobalVariableValueAt(const MachineInstr &MI,
         } else {
           // Default initial value of global variable
           uint64_t SV = 0;
-          assert(SymbSize == MemAccessSizeInBytes &&
-                 "Inconsistent symbol sizes");
 
           if (ConstantVec.size() > 0) {
             // Get type of data value
