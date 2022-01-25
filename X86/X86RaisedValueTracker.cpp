@@ -1188,6 +1188,10 @@ Type *X86RaisedValueTracker::getSSEInstructionType(const MachineInstr &MI,
   case X86::MOVDQUrm:
   case X86::MOVDQUrr:
     return VectorType::get(Type::getInt32Ty(Ctx), 4, false);
+  case X86::MOVQI2PQIrm:
+    return VectorType::get(Type::getInt64Ty(Ctx), 1, false);
+  case X86::MOVDI2PDIrm:
+    return VectorType::get(Type::getInt32Ty(Ctx), 1, false);
   }
 
   uint64_t TSFlags = MI.getDesc().TSFlags;
