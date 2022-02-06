@@ -1143,6 +1143,8 @@ Value *X86MachineInstructionRaiser::getStackAllocatedValue(
   // Accessing data below rsp, allocate but don't change rsp
   if (PReg == X86::RSP && StackOffset < 0) {
     expandStack(MI, -StackOffset);
+  } else if (PReg == X86::RBP && StackOffset < 0 && stackSize - 8 + StackOffset < 0) {
+    expandStack(MI, -(stackSize - 8 + StackOffset));
   }
 
   auto PointerVal = getRegOrArgValue(PReg, MI.getParent()->getNumber());
