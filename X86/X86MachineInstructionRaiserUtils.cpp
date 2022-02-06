@@ -1190,8 +1190,8 @@ void X86MachineInstructionRaiser::expandStack(const MachineInstr &MI,
 
 void X86MachineInstructionRaiser::reduceStack(const MachineInstr &MI,
                                               int64_t Size) {
-  assert(usedStackSize >= Size && "Cannot reduce stack by more than its size");
-  usedStackSize -= Size;
+//  assert(usedStackSize >= Size && "Cannot reduce stack by more than its size");
+//  usedStackSize -= Size;
 }
 
 Instruction *X86MachineInstructionRaiser::adjustStackPointer(Value *SPVal, int64_t size, const Twine &nameStr, BasicBlock *InsertAtEnd) {
