@@ -1138,120 +1138,79 @@ Value *X86MachineInstructionRaiser::getStackAllocatedValue(
          "Unknown type of operand in memory referencing instruction");
   BasicBlock *RaisedBB = getRaisedBasicBlock(MI.getParent());
 
-  int64_t BaseRegOffset;
-  switch (PReg) {
-  case X86::RSP:
-    BaseRegOffset = SPOffset;
-    break;
-  case X86::RBP:
-    BaseRegOffset = BPOffset;
-    break;
-  default:
-    llvm_unreachable("Expected RSP or RBP as Base register for stack access");
-  }
-  int StackOffset = SPOffset - BaseRegOffset + MemRef.Disp;
-  assert(StackOffset < SPOffset && "Out of bounds stack access");
-  assert(Stack != nullptr && "Stack was null");
+  int StackOffset = MemRef.Disp;
 
-  // If stack is too small, expand it to fit
-  if (StackOffset < 0) {
+  // Accessing data below rsp, allocate but don't change rsp
+  if (PReg == X86::RSP && StackOffset < 0) {
     expandStack(MI, -StackOffset);
-    StackOffset = 0;
   }
 
-  Type *Int8Type = Type::getInt8Ty(Ctx);
-  Value *OffsetVal = ConstantInt::get(Type::getInt64Ty(Ctx), StackOffset);
-  auto StackAddrInst = GetElementPtrInst::Create(
-      Int8Type, Stack, ArrayRef<Value *>(OffsetVal), "", RaisedBB);
-  auto StackAddr =
-      new BitCastInst(StackAddrInst, MemOpTy->getPointerTo(), "", RaisedBB);
-  return StackAddr;
+  auto PointerVal = getRegOrArgValue(PReg, MI.getParent()->getNumber());
+  assert(PointerVal != nullptr && "RSP/RBP value not defined");
+
+  // calculate offset
+  auto NewSPVal = adjustStackPointer(PointerVal, StackOffset, "RSP", RaisedBB);
+
+  // bitcast to correct type
+  return new BitCastInst(NewSPVal, MemOpTy->getPointerTo(), "", RaisedBB);
 }
 
-Value *X86MachineInstructionRaiser::expandStack(const MachineInstr &MI,
-                                                int64_t Size) {
+void X86MachineInstructionRaiser::expandStack(const MachineInstr &MI,
+                                              int64_t Size) {
   assert(Size > 0 && "Cannot expand stack by a negative/zero amount");
 
-  SPOffset += Size;
+  // check if there is free space on our stack
+  if (Size <= stackSize - usedStackSize) {
+    usedStackSize += Size;
+    return;
+  }
+
+  stackSize += Size;
+  usedStackSize += Size;
 
   LLVMContext &Ctx(MF.getFunction().getContext());
 
   const DataLayout &dataLayout = MR->getModule()->getDataLayout();
   unsigned allocaAddrSpace = dataLayout.getAllocaAddrSpace();
 
-  Value *StackSizeVal = ConstantInt::get(Type::getInt64Ty(Ctx), SPOffset);
-  AllocaInst *NewStack = new AllocaInst(Type::getInt8Ty(Ctx), allocaAddrSpace,
-                                        StackSizeVal, Align(), "stack");
+  assert(stack != nullptr && "Stack was not initialized for raised function");
 
-  if (Stack == nullptr) {
-    assert(!mbbToBBMap.empty() && "No BB to insert stack allocation found");
-    mbbToBBMap.begin()->second->getInstList().push_front(NewStack);
-  } else {
-    auto it = Stack->user_begin();
-    while (it != Stack->user_end()) {
-      auto U = *it;
-      it++;
-      if (auto I = dyn_cast<GetElementPtrInst>(U)) {
-        auto Offset = dyn_cast<ConstantInt>(I->getOperand(1));
-        assert(Offset != nullptr && "Expected offset to be constant");
+  auto StackSizeVal = ConstantInt::get(Type::getInt64Ty(Ctx), stackSize);
+  auto NewStack = new AllocaInst(Type::getInt8Ty(Ctx), allocaAddrSpace,
+                                 StackSizeVal, Align(), "stack");
+  auto NewInitialSP = adjustStackPointer(NewStack, stackSize, "RSP_initial");
 
-        int64_t NewOffset = Offset->getSExtValue() + Size;
-        Type *Int8Type = Type::getInt8Ty(Ctx);
-        Value *OffsetVal = ConstantInt::get(Type::getInt64Ty(Ctx), NewOffset);
-        auto StackAddrInst = GetElementPtrInst::Create(
-            Int8Type, Stack, ArrayRef<Value *>(OffsetVal), "");
-        ReplaceInstWithInst(I, StackAddrInst);
-      }
-    }
-    ReplaceInstWithInst(Stack, NewStack);
-  }
-  Stack = NewStack;
-
-  int64_t AccessSize = getInstructionMemOpSize(MI.getOpcode());
-  if (AccessSize == 0) {
-    AccessSize = 8;
-  }
-
-  X86AddressMode memRef;
-  memRef.Base.Reg = X86::RSP;
-  memRef.BaseType = X86AddressMode::RegBase;
-  // Displacement of the store location of MIDesc.ImplicitUses[0] 0 off SP
-  // i.e., on top of stack.
-  memRef.Disp = 0;
-  memRef.IndexReg = X86::NoRegister;
-  memRef.Scale = 1;
-  auto SPValue = getStackAllocatedValue(MI, memRef, AccessSize);
-
-  raisedValues->setPhysRegSSAValue(X86::RSP, MI.getParent()->getNumber(),
-                                   SPValue);
-
-  return SPValue;
+  ReplaceInstWithInst(stack, NewStack);
+  stack = NewStack;
+  ReplaceInstWithInst(initialSP, NewInitialSP);
+  initialSP = NewInitialSP;
 }
 
-Value *X86MachineInstructionRaiser::reduceStack(const MachineInstr &MI,
-                                                int64_t Size) {
-  assert(Size > 0 && "Cannot reduce stack size by a negative amount");
-  assert(Size <= SPOffset && "Cannot reduce stack to negative size");
+void X86MachineInstructionRaiser::reduceStack(const MachineInstr &MI,
+                                              int64_t Size) {
+  assert(usedStackSize >= Size && "Cannot reduce stack by more than its size");
+  usedStackSize -= Size;
+}
 
-  SPOffset -= Size;
+Instruction *X86MachineInstructionRaiser::adjustStackPointer(Value *SPVal, int64_t size, const Twine &nameStr, BasicBlock *InsertAtEnd) {
+  LLVMContext &Ctx(MF.getFunction().getContext());
 
-  if (SPOffset > 0) {
-    X86AddressMode memRef;
-    memRef.Base.Reg = X86::RSP;
-    memRef.BaseType = X86AddressMode::RegBase;
-    // Displacement of the store location of MIDesc.ImplicitUses[0] 0 off SP
-    // i.e., on top of stack.
-    memRef.Disp = 0;
-    memRef.IndexReg = X86::NoRegister;
-    memRef.Scale = 1;
-    auto SPValue = getStackAllocatedValue(MI, memRef, 8);
-    raisedValues->setPhysRegSSAValue(X86::RSP, MI.getParent()->getNumber(),
-                                     SPValue);
-    return SPValue;
+  if (!SPVal->getType()->isPointerTy() || !SPVal->getType()->getPointerElementType()->isIntegerTy(8)) {
+    assert(InsertAtEnd != nullptr && "Expected InsertAtEnd block to be non-null");
+    SPVal = new IntToPtrInst(SPVal, Type::getInt8Ty(raisedFunction->getContext())->getPointerTo(), "", InsertAtEnd);
   }
 
-  // stack is empty
-  return nullptr;
+  if (InsertAtEnd != nullptr) {
+    return GetElementPtrInst::Create(
+        SPVal->getType()->getPointerElementType(), SPVal,
+        ArrayRef<Value *>(ConstantInt::get(Type::getInt64Ty(Ctx), size)),
+        nameStr, InsertAtEnd);
+  } else {
+    return GetElementPtrInst::Create(
+        SPVal->getType()->getPointerElementType(), SPVal,
+        ArrayRef<Value *>(ConstantInt::get(Type::getInt64Ty(Ctx), size)),
+        nameStr);
+  }
 }
 
 // Value *X86MachineInstructionRaiser::getStackAllocatedValue(

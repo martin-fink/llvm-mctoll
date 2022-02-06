@@ -95,9 +95,10 @@ private:
   // maintain a shadow stack indexed and sorted by descending order of stack
   // offset of objects allocated on the stack.
   std::map<int64_t, int> ShadowStackIndexedByOffset;
-  int64_t SPOffset = 0;
-  int64_t BPOffset = 0;
-  AllocaInst *Stack;
+  Instruction *stack = nullptr;
+  Instruction *initialSP = nullptr;
+  int64_t stackSize = 0;
+  int64_t usedStackSize = 0;
 
   // Commonly used LLVM data structures during this phase
   MachineRegisterInfo &machineRegInfo;
@@ -199,8 +200,9 @@ private:
   Type *getReturnTypeFromMBB(const MachineBasicBlock &MBB, bool &HasCall);
   Function *getTargetFunctionAtPLTOffset(const MachineInstr &, uint64_t);
   Value *getStackAllocatedValue(const MachineInstr &, X86AddressMode &, int64_t AccessSize = 0);
-  Value *expandStack(const MachineInstr &MI, int64_t Size);
-  Value *reduceStack(const MachineInstr &MI, int64_t size);
+  void expandStack(const MachineInstr &MI, int64_t Size);
+  void reduceStack(const MachineInstr &MI, int64_t size);
+  Instruction *adjustStackPointer(Value *SP, int64_t size, const Twine & = "RSP", BasicBlock *InsertAtEnd = nullptr);
   Value *getRegOperandValue(const MachineInstr &mi, unsigned OperandIndex);
 
   bool handleUnpromotedReachingDefs();

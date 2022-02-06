@@ -89,51 +89,74 @@ bool X86MachineInstructionRaiser::raisePushInstruction(const MachineInstr &MI) {
   memRef.IndexReg = X86::NoRegister;
   memRef.Scale = 1;
 
-  Value *StackRef = expandStack(MI, getInstructionMemOpSize(MI.getOpcode()));
+  LLVMContext &Ctx(MF.getFunction().getContext());
+  BasicBlock *RaisedBB = getRaisedBasicBlock(MI.getParent());
+
+  int64_t InstructionMemOpSize = getInstructionMemOpSize(MI.getOpcode());
+  expandStack(MI, InstructionMemOpSize);
+
+  // change sp
+  auto MBBNo = MI.getParent()->getNumber();
+  auto SPVal = getRegOrArgValue(X86::RSP, MBBNo);
+  assert(SPVal != nullptr && "RSP is undefined");
+
+  auto NewSPVal = adjustStackPointer(SPVal, -InstructionMemOpSize, "RSP", RaisedBB);
+  raisedValues->setPhysRegSSAValue(X86::RSP, MBBNo, NewSPVal);
 
   // Get operand value
   Value *RegValue = getRegOperandValue(MI, 0);
   // If the value of push operand register is known, then it does not
   // have a manifestation in the function code. So, a known garbage value is
   // used to affect the push operation.
-  Type *StackRefElemTy = StackRef->getType()->getPointerElementType();
+  Type *StackRefElemTy = Type::getIntNTy(Ctx, InstructionMemOpSize * 8);
   if (RegValue == nullptr) {
     RegValue =
         ConstantInt::get(StackRefElemTy, 0xdeadbeef, false /* isSigned */);
   }
   // Ensure types of RegValue matches that of StackRef
-  BasicBlock *RaisedBB = getRaisedBasicBlock(MI.getParent());
   RegValue = getRaisedValues()->castValue(RegValue, StackRefElemTy, RaisedBB);
 
+  // Bitcast Stack pointer
+  auto StackRef =
+      new BitCastInst(NewSPVal, StackRefElemTy->getPointerTo(), "", RaisedBB);
   // Store operand at stack top (StackRef)
   new StoreInst(RegValue, StackRef, RaisedBB);
 
   return true;
 }
 
-bool X86MachineInstructionRaiser::raisePopInstruction(const MachineInstr &mi) {
-  // TODO : Need to handle pop instructions other than those that restore bp
-  // from stack.
-  const MCInstrDesc &MCIDesc = mi.getDesc();
+bool X86MachineInstructionRaiser::raisePopInstruction(const MachineInstr &MI) {
+  LLVMContext &Ctx(MF.getFunction().getContext());
+  BasicBlock *RaisedBB = getRaisedBasicBlock(MI.getParent());
+  const MCInstrDesc &MCIDesc = MI.getDesc();
   uint64_t MCIDTSFlags = MCIDesc.TSFlags;
 
   if ((MCIDTSFlags & X86II::FormMask) == X86II::AddRegFrm) {
     // This is a register POP. If the source is base pointer,
     // not need to raise the instruction.
-    if (mi.definesRegister(X86::RBP) || mi.definesRegister(X86::EBP)) {
-      reduceStack(mi, getPhysRegSizeInBits(mi.getOperand(0).getReg()) / 8);
-      BPOffset = 0;
-      return true;
-    } else {
-      // assert(false && "Unhandled POP instruction that restores a register
-      // "
-      //                "other than frame pointer");
-      return true;
-    }
+    uint64_t OperandSize = getPhysRegSizeInBits(MI.getOperand(0).getReg()) / 8;
+
+    // change sp
+    auto MBBNo = MI.getParent()->getNumber();
+    auto SPVal = getRegOrArgValue(X86::RSP, MBBNo);
+    assert(SPVal != nullptr && "RSP is undefined");
+
+    auto NewSPVal = adjustStackPointer(SPVal, OperandSize, "RSP", RaisedBB);
+    raisedValues->setPhysRegSSAValue(X86::RSP, MBBNo, NewSPVal);
+
+    Type *StackRefElemTy = Type::getIntNTy(Ctx, OperandSize * 8);
+    auto StackRef =
+        new BitCastInst(NewSPVal, StackRefElemTy->getPointerTo(), "", RaisedBB);
+    auto LdInst = new LoadInst(StackRefElemTy, StackRef, "", RaisedBB);
+
+    unsigned int DstPReg = MI.getOperand(0).getReg();
+    raisedValues->setPhysRegSSAValue(DstPReg, MBBNo, LdInst);
+
+    reduceStack(MI, OperandSize);
+    return true;
   } else {
-    if (getInstructionKind(mi.getOpcode()) == InstructionKind::LEAVE_OP) {
-      reduceStack(mi, getInstructionMemOpSize(mi.getOpcode()));
-      BPOffset = 0;
+    if (getInstructionKind(MI.getOpcode()) == InstructionKind::LEAVE_OP) {
+      reduceStack(MI, getInstructionMemOpSize(MI.getOpcode()));
       return true;
     }
     assert(false && "Unhandled POP instruction with source operand other "
@@ -350,16 +373,6 @@ bool X86MachineInstructionRaiser::raiseMoveRegToRegMachineInstr(
   else
     assert(false &&
            "Unexpected operand numbers for move reg-to-reg instruction");
-
-  const MCInstrDesc &MIDesc = MI.getDesc();
-  // Create a stack alloc slot corresponding to the adjusted sp value, if the
-  // operands reference SP.
-  // Check if we are dealing with a mov rbp, rsp instruction
-  if ((MIDesc.getNumDefs() == 1) &&
-      (find64BitSuperReg(MI.getOperand(DstIndex).getReg()) == X86::RBP) &&
-      (find64BitSuperReg(MI.getOperand(Src1Index).getReg()) == X86::RSP)) {
-    BPOffset = SPOffset;
-  }
 
   switch (Opcode) {
   case X86::MOVSX16rr8:
@@ -3554,6 +3567,7 @@ bool X86MachineInstructionRaiser::raiseBinaryOpImmToRegMachineInstr(
 
     uint64_t Imm = MI.getOperand(SrcOp2Index).getImm();
 
+    int64_t OffsetVal;
     switch (MI.getOpcode()) {
     case X86::ADD8i8:
     case X86::ADD16i16:
@@ -3567,6 +3581,7 @@ bool X86MachineInstructionRaiser::raiseBinaryOpImmToRegMachineInstr(
     case X86::ADD64ri8:
     case X86::ADD64ri32:
       reduceStack(MI, Imm);
+      OffsetVal = Imm;
       break;
     case X86::SUB32i32:
     case X86::SUB32ri:
@@ -3575,10 +3590,18 @@ bool X86MachineInstructionRaiser::raiseBinaryOpImmToRegMachineInstr(
     case X86::SUB64ri32:
     case X86::SUB64i32:
       expandStack(MI, Imm);
+      OffsetVal = -Imm;
       break;
     default:
       assert(false && "SP computation - unhandled binary opcode instruction");
     }
+
+    auto SPVal = getRegOrArgValue(X86::RSP, MI.getParent()->getNumber());
+    assert(SPVal != nullptr && "RSP/RBP value not defined");
+
+    // calculate offset
+    auto NewSPVal = adjustStackPointer(SPVal, OffsetVal, "RSP", RaisedBB);
+    raisedValues->setPhysRegSSAValue(X86::RSP, MBBNo, NewSPVal);
   } else {
     // Values need to be discovered to form the appropriate instruction.
     Value *SrcOp1Value = nullptr;
@@ -5119,10 +5142,6 @@ bool X86MachineInstructionRaiser::raiseMachineFunction() {
     raisedValues->setPhysRegSSAValue(X86::RCX, 0, Zero64BitValue);
   }
 
-  Stack = nullptr;
-  SPOffset = 0;
-  BPOffset = 0;
-
   // Walk basic blocks of the MachineFunction in LoopTraversal - except that
   // do not walk the block coming from back edge.By performing this
   // traversal, the idea is to make sure predecessors are translated before
@@ -5147,6 +5166,29 @@ bool X86MachineInstructionRaiser::raiseMachineFunction() {
     // Do not use CurFunction here, as CurFunction might change if it's return
     // type is changed
     BasicBlock *CurIBB = BasicBlock::Create(Ctx, BBName, getRaisedFunction());
+
+    // Set up stack if translating the entry block
+    if (MBBNo == 0) {
+      const DataLayout &dataLayout = MR->getModule()->getDataLayout();
+      unsigned allocaAddrSpace = dataLayout.getAllocaAddrSpace();
+
+      // initialize function stack
+      stack = new AllocaInst(Type::getInt8Ty(Ctx), allocaAddrSpace,
+                             Zero64BitValue, Align(), "stack", CurIBB);
+      initialSP = GetElementPtrInst::Create(Type::getInt8Ty(Ctx), stack,
+                                            ArrayRef<Value *>(Zero64BitValue),
+                                            "RSP", CurIBB);
+
+      // explain why this is necessary
+      auto NewSPVal = GetElementPtrInst::Create(
+          Type::getInt8Ty(Ctx), initialSP, ArrayRef<Value *>(Zero64BitValue),
+          "RSP_initial", CurIBB);
+
+      raisedValues->setPhysRegSSAValue(X86::RSP, MBBNo, NewSPVal);
+      stackSize = 0;
+      usedStackSize = 0;
+    }
+
     // Record the mapping of the number of MBB to corresponding BasicBlock.
     // This information is used to raise branch instructions, if any, of the
     // MBB in a later walk of MachineBasicBlocks of MF.
