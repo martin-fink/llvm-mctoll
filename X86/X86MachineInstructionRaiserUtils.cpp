@@ -1148,6 +1148,9 @@ Value *X86MachineInstructionRaiser::getStackAllocatedValue(
   }
 
   auto PointerVal = getRegOrArgValue(PReg, MI.getParent()->getNumber());
+  if (PointerVal == nullptr) {
+    PointerVal = initialSP;
+  }
   assert(PointerVal != nullptr && "RSP/RBP value not defined");
 
   // calculate offset
