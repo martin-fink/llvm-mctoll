@@ -1555,6 +1555,155 @@ bool X86MachineInstructionRaiser::raiseBinaryOpRegToRegMachineInstr(
     dstReg = MI.getOperand(DestOpIndex).getReg();
     raisedValues->setPhysRegSSAValue(dstReg, MBBNo, Result);
   } break;
+  case X86::PADDBrr:
+  case X86::PADDDrr:
+  case X86::PADDQrr:
+  case X86::PADDWrr:
+  case X86::PSUBBrr:
+  case X86::PSUBDrr:
+  case X86::PSUBQrr:
+  case X86::PSUBWrr: {
+    Value *Src1Value = ExplicitSrcValues.at(0);
+    Value *Src2Value = ExplicitSrcValues.at(1);
+    // Verify the def operand is a register.
+    assert(MI.getOperand(DestOpIndex).isReg() &&
+           "Expecting destination of sse op instruction to be a register "
+           "operand");
+    assert((MCID.getNumDefs() == 1) &&
+           "Unexpected number of defines in sse op instruction");
+    assert((Src1Value != nullptr) && (Src2Value != nullptr) &&
+           "Unhandled situation: register is used before initialization in "
+           "sse op");
+    dstReg = MI.getOperand(DestOpIndex).getReg();
+
+    Type *SrcTy;
+    LLVMContext &Ctx(MF.getFunction().getContext());
+    switch (MI.getOpcode()) {
+    case X86::PADDBrr:
+    case X86::PSUBBrr:
+      SrcTy = VectorType::get(Type::getInt8Ty(Ctx), 16, false);
+      break;
+    case X86::PADDWrr:
+    case X86::PSUBWrr:
+      SrcTy = VectorType::get(Type::getInt16Ty(Ctx), 8, false);
+      break;
+    case X86::PADDDrr:
+    case X86::PSUBDrr:
+      SrcTy = VectorType::get(Type::getInt32Ty(Ctx), 4, false);
+      break;
+    case X86::PADDQrr:
+    case X86::PSUBQrr:
+      SrcTy = VectorType::get(Type::getInt64Ty(Ctx), 2, false);
+      break;
+    default:
+      MI.dump();
+      llvm_unreachable("Unhandled sse packed instruction");
+    }
+
+    Src1Value = new BitCastInst(Src1Value, SrcTy, "", RaisedBB);
+    Src2Value = new BitCastInst(Src2Value, SrcTy, "", RaisedBB);
+
+    bool isAdd = instrNameStartsWith(MI, "PADD");
+    bool isSub = instrNameStartsWith(MI, "PSUB");
+
+    Instruction *BinOpInst = nullptr;
+    if (isAdd) {
+      BinOpInst = BinaryOperator::CreateAdd(Src1Value, Src2Value);
+    } else if (isSub) {
+      BinOpInst = BinaryOperator::CreateSub(Src1Value, Src2Value);
+    } else {
+      MI.dump();
+      llvm_unreachable("Unhandled instruction");
+    }
+
+    // Copy any necessary rodata related metadata
+    raisedValues->setInstMetadataRODataIndex(Src1Value, BinOpInst);
+    // raisedValues->setInstMetadataRODataIndex(Src2Value, BinOpInst);
+    RaisedBB->getInstList().push_back(BinOpInst);
+    dstValue = BinOpInst;
+
+    // Update the value of dstReg
+    raisedValues->setPhysRegSSAValue(dstReg, MBBNo, dstValue);
+  } break;
+  case X86::PMAXSBrr:
+  case X86::PMAXSDrr:
+  case X86::PMAXSWrr:
+  case X86::PMAXUBrr:
+  case X86::PMAXUDrr:
+  case X86::PMAXUWrr:
+  case X86::PMINSBrr:
+  case X86::PMINSDrr:
+  case X86::PMINSWrr:
+  case X86::PMINUBrr:
+  case X86::PMINUDrr:
+  case X86::PMINUWrr: {
+    Value *Src1Value = ExplicitSrcValues.at(0);
+    Value *Src2Value = ExplicitSrcValues.at(1);
+    // Verify the def operand is a register.
+    assert(MI.getOperand(DestOpIndex).isReg() &&
+           "Expecting destination of sse op instruction to be a register "
+           "operand");
+    assert((MCID.getNumDefs() == 1) &&
+           "Unexpected number of defines in sse op instruction");
+    assert((Src1Value != nullptr) && (Src2Value != nullptr) &&
+           "Unhandled situation: register is used before initialization in "
+           "sse op");
+    dstReg = MI.getOperand(DestOpIndex).getReg();
+
+    bool isSigned = instrNameStartsWith(MI, "PMAXS") || instrNameStartsWith(MI, "PMINS");
+    bool isMax = instrNameStartsWith(MI, "PMAX");
+    CmpInst::Predicate CmpPred;
+    if (isMax) {
+      CmpPred = isSigned ? CmpInst::Predicate::ICMP_SGT : CmpInst::Predicate::ICMP_UGT;
+    } else {
+      CmpPred = isSigned ? CmpInst::Predicate::ICMP_SLT : CmpInst::Predicate::ICMP_ULT;
+    }
+
+    unsigned int segmentSize;
+    switch (MI.getOpcode()) {
+    case X86::PMAXSBrr:
+    case X86::PMAXUBrr:
+    case X86::PMINSBrr:
+    case X86::PMINUBrr:
+      segmentSize = 8;
+      break;
+    case X86::PMAXSWrr:
+    case X86::PMAXUWrr:
+    case X86::PMINSWrr:
+    case X86::PMINUWrr:
+      segmentSize = 16;
+      break;
+    case X86::PMAXSDrr:
+    case X86::PMAXUDrr:
+    case X86::PMINSDrr:
+    case X86::PMINUDrr:
+      segmentSize = 32;
+      break;
+    default:
+      llvm_unreachable("Unhandled packed min/max instruction");
+    }
+
+    LLVMContext &Ctx(MF.getFunction().getContext());
+    FixedVectorType *VecTy = FixedVectorType::get(Type::getIntNTy(Ctx, segmentSize), 128 / segmentSize);
+
+    Src1Value = new BitCastInst(Src1Value, VecTy, "", RaisedBB);
+    Src2Value = new BitCastInst(Src2Value, VecTy, "", RaisedBB);
+
+    Value *Result = ConstantInt::get(VecTy, 0);
+    for (unsigned int i = 0; i < VecTy->getNumElements(); ++i) {
+      auto Index = ConstantInt::get(VecTy->getElementType(), i);
+      auto CmpSegment1 = ExtractElementInst::Create(Src1Value, Index, "", RaisedBB);
+      auto CmpSegment2 = ExtractElementInst::Create(Src2Value, Index, "", RaisedBB);
+      auto CmpInst = new ICmpInst(*RaisedBB, CmpPred, CmpSegment1, CmpSegment2, "cmp_segment");
+      auto SelectInst = SelectInst::Create(CmpInst, CmpSegment1, CmpSegment2, "min_max_segment", RaisedBB);
+      Result = InsertElementInst::Create(Result, SelectInst, Index, "", RaisedBB);
+    }
+
+    // Copy any necessary rodata related metadata
+    raisedValues->setInstMetadataRODataIndex(Src1Value, (Instruction *) Result);
+    // Update the value of dstReg
+    raisedValues->setPhysRegSSAValue(dstReg, MBBNo, Result);
+  } break;
   default:
     MI.dump();
     assert(false && "Unhandled binary instruction");
@@ -1809,6 +1958,126 @@ bool X86MachineInstructionRaiser::raiseBinaryOpMemToRegInstr(
     Value *IntrinsicCallArgs[] = {LoadValue};
     BinOpInst = CallInst::Create(
         IntrinsicFunc, ArrayRef<Value *>(IntrinsicCallArgs));
+  } break;
+  case X86::PADDBrm:
+  case X86::PADDDrm:
+  case X86::PADDQrm:
+  case X86::PADDWrm:
+  case X86::PSUBBrm:
+  case X86::PSUBDrm:
+  case X86::PSUBQrm:
+  case X86::PSUBWrm: {
+    assert(DestValue != nullptr && "Encountered instruction with undefined register");
+    Type *SrcTy;
+    LLVMContext &Ctx(MF.getFunction().getContext());
+    switch (MI.getOpcode()) {
+    case X86::PADDBrm:
+    case X86::PSUBBrm:
+      SrcTy = VectorType::get(Type::getInt8Ty(Ctx), 16, false);
+      break;
+    case X86::PADDWrm:
+    case X86::PSUBWrm:
+      SrcTy = VectorType::get(Type::getInt16Ty(Ctx), 8, false);
+      break;
+    case X86::PADDDrm:
+    case X86::PSUBDrm:
+      SrcTy = VectorType::get(Type::getInt32Ty(Ctx), 4, false);
+      break;
+    case X86::PADDQrm:
+    case X86::PSUBQrm:
+      SrcTy = VectorType::get(Type::getInt64Ty(Ctx), 2, false);
+      break;
+    default:
+      MI.dump();
+      llvm_unreachable("Unhandled sse packed instruction");
+    }
+
+    DestValue = new BitCastInst(DestValue, SrcTy, "", RaisedBB);
+    LoadValue = new BitCastInst(LoadValue, SrcTy, "", RaisedBB);
+
+    bool isAdd = instrNameStartsWith(MI, "PADD");
+    bool isSub = instrNameStartsWith(MI, "PSUB");
+
+    if (isAdd) {
+      BinOpInst = BinaryOperator::CreateAdd(DestValue, LoadValue);
+    } else if (isSub) {
+      BinOpInst = BinaryOperator::CreateSub(DestValue, LoadValue);
+    } else {
+      MI.dump();
+      llvm_unreachable("Unhandled instruction");
+    }
+  } break;
+  case X86::PMAXSBrm:
+  case X86::PMAXSDrm:
+  case X86::PMAXSWrm:
+  case X86::PMAXUBrm:
+  case X86::PMAXUDrm:
+  case X86::PMAXUWrm:
+  case X86::PMINSBrm:
+  case X86::PMINSDrm:
+  case X86::PMINSWrm:
+  case X86::PMINUBrm:
+  case X86::PMINUDrm:
+  case X86::PMINUWrm: {
+    assert(DestValue != nullptr && "Encountered instruction with undefined register");
+    Value *Src1Value = DestValue;
+    Value *Src2Value = LoadValue;
+
+    bool isSigned = instrNameStartsWith(MI, "PMAXS") || instrNameStartsWith(MI, "PMINS");
+    bool isMax = instrNameStartsWith(MI, "PMAX");
+    CmpInst::Predicate CmpPred;
+    if (isMax) {
+      CmpPred = isSigned ? CmpInst::Predicate::ICMP_SGT : CmpInst::Predicate::ICMP_UGT;
+    } else {
+      CmpPred = isSigned ? CmpInst::Predicate::ICMP_SLT : CmpInst::Predicate::ICMP_ULT;
+    }
+
+    unsigned int segmentSize;
+    switch (MI.getOpcode()) {
+    case X86::PMAXSBrm:
+    case X86::PMAXUBrm:
+    case X86::PMINSBrm:
+    case X86::PMINUBrm:
+      segmentSize = 8;
+      break;
+    case X86::PMAXSWrm:
+    case X86::PMAXUWrm:
+    case X86::PMINSWrm:
+    case X86::PMINUWrm:
+      segmentSize = 16;
+      break;
+    case X86::PMAXSDrm:
+    case X86::PMAXUDrm:
+    case X86::PMINSDrm:
+    case X86::PMINUDrm:
+      segmentSize = 32;
+      break;
+    default:
+      llvm_unreachable("Unhandled packed min/max instruction");
+    }
+
+    LLVMContext &Ctx(MF.getFunction().getContext());
+    FixedVectorType *VecTy = FixedVectorType::get(Type::getIntNTy(Ctx, segmentSize), 128 / segmentSize);
+
+    Src1Value = new BitCastInst(Src1Value, VecTy, "", RaisedBB);
+    Src2Value = new BitCastInst(Src2Value, VecTy, "", RaisedBB);
+
+    Value *Result = ConstantInt::get(VecTy, 0);
+    for (unsigned int i = 0; i < VecTy->getNumElements(); ++i) {
+      auto Index = ConstantInt::get(VecTy->getElementType(), i);
+      auto CmpSegment1 = ExtractElementInst::Create(Src1Value, Index, "", RaisedBB);
+      auto CmpSegment2 = ExtractElementInst::Create(Src2Value, Index, "", RaisedBB);
+      auto CmpInst = new ICmpInst(*RaisedBB, CmpPred, CmpSegment1, CmpSegment2, "cmp_segment");
+      auto SelectInst = SelectInst::Create(CmpInst, CmpSegment1, CmpSegment2, "min_max_segment", RaisedBB);
+      // don't insert last instruction as that will be done after the switch statement
+      if (i != VecTy->getNumElements() - 1) {
+        Result = InsertElementInst::Create(Result, SelectInst, Index, "", RaisedBB);
+      } else {
+        Result = InsertElementInst::Create(Result, SelectInst, Index);
+      }
+    }
+
+    BinOpInst = (Instruction *) Result;
   } break;
   default:
     assert(false && "Unhandled binary op mem to reg instruction ");
